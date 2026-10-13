@@ -1012,9 +1012,6 @@ class LoadCellPrinterProbe:
         self._printer.add_object("probe", printer_probe)
 
     def get_status(self, eventtime):
-        # Expose the load cell probe's last Z probing result through its status object,  allowing macros such as nozzle wipe to access printer.load_cell_probe.last_z_result.
-        # This is especially important when register_as_probe is False, as the load cell is not registered as the printer's main probe and its results are therefore
-        # not accessible through printer.probe.last_z_result.
         status = self._tapping_move.get_status(eventtime)
         status["last_z_result"] = self._printer_probe.last_z_result
         return status
