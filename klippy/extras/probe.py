@@ -314,6 +314,125 @@ class ProbeDistanceCollector(Protocol):
     def sample_rate(self) -> float: ...
 
 
+class sentinel:
+    pass
+
+
+class ProbeList:
+    @staticmethod
+    def get_list(printer: Printer) -> ProbeList:
+        probes = printer.lookup_object("probe_list", None)
+        if probes is None:
+            probes = ProbeList(printer)
+            printer.add_object("probe_list", probes)
+        return probes
+
+    def __init__(self, printer):
+        self.printer = printer
+        self.probes: dict[str, PrinterProbe] = {}
+        self.default_probe = None
+        printer.register_event_handler("klippy:connect", self._handle_connect)
+        gcode = printer.lookup_object("gcode")
+        gcode.register_command(
+            "LIST_PROBES", self.cmd_LIST_PROBES, desc=self.cmd_LIST_PROBES_help
+        )
+
+    def _handle_connect(self):
+        if self.default_probe is None:
+            probe = self.printer.lookup_object("probe", None)
+            if probe is not None:
+                self.default_probe = ("probe", probe)
+            else:
+                probe = self.get_probe("manual")
+                if probe is not None:
+                    probe.is_default_probe = True
+                    self.default_probe = (probe.probe_name, probe)
+
+    def get_status(self, eventtime):
+        return {
+            "probes": list(self.probes.keys()),
+            "default_probe": self.default_probe and self.default_probe[0],
+            "probe_status": {
+                k: p.get_status(eventtime) for (k, p) in self.probes.items()
+            },
+        }
+
+    def get_all(self):
+        return self.probes
+
+    def get_probe(self, name) -> PrinterProbe | None:
+        return self.probes.get(name, None)
+
+    def get_default_probe(self) -> PrinterProbe | None:
+        return self.default_probe and self.default_probe[1]
+
+    def get_command_probe(
+        self,
+        gcmd,
+        default=sentinel,
+        no_default_error="No default probe registered, explicitly select probe by passing `PROBE=`",
+        default_probe_name=None,
+        param_name="PROBE",
+    ) -> PrinterProbe:
+        requested_probe = gcmd.get(param_name, default_probe_name)
+        if (
+            param_name == "PROBE"
+            and gcmd.get("METHOD", "automatic").lower() == "manual"
+        ):
+            requested_probe = "manual"
+        if requested_probe is not None:
+            if requested_probe in self.probes:
+                return self.probes[requested_probe]
+            else:
+                raise gcmd.error(f"Unknown requested probe {requested_probe}")
+        else:
+            probe = self.get_default_probe()
+            if probe is None and default is sentinel:
+                raise gcmd.error(no_default_error)
+            return probe or default
+
+    def get_config_probe(self, config, default=sentinel) -> PrinterProbe:
+        probe_name = config.get("probe", None)
+        probe = None
+        if probe_name is None:
+            probe = self.get_default_probe()
+        else:
+            probe = self.get_probe(probe_name)
+        if probe is None and default is sentinel:
+            if probe_name is None:
+                raise configfile.error("No default probe available")
+            else:
+                raise configfile.error(
+                    f"Requested probe {probe_name} couldn't be found"
+                )
+        return probe or default
+
+    def add_probe_object(self, obj, config):
+        if obj.probe_name in self.probes:
+            raise config.error(f"Duplicate probe name {obj.probe_name}")
+        if obj.is_default_probe:
+            # If we allow a [probe] config section together with a different default probe, the
+            # loader might ignore the true [probe] section entirely.
+            if config.get_name() != "probe" and config.has_section("probe"):
+                raise config.error(
+                    "Having a [probe] section together with another probe marked `register_as_probe: True` is not supported"
+                )
+            # The default probe gets registered as "probe" for compatibility with external plugins.
+            obj.printer.add_object("probe", obj)
+            self.default_probe = (obj.probe_name, obj)
+        self.probes[obj.probe_name] = obj
+        return obj
+
+    cmd_LIST_PROBES_help = "List all registered probes"
+
+    def cmd_LIST_PROBES(self, gcmd: GCodeCommand):
+        gcmd.respond_info("Registered probes:")
+        for key, probe in self.probes.items():
+            gcmd.respond_info(
+                f"- {key}{' [default]' if probe.is_default_probe else ''}"
+            )
+
+
 class PrinterProbe:
     def __init__(
         self, config, mcu_probe, pin_chip_name="probe", command_prefix=""
@@ -501,7 +620,7 @@ class PrinterProbe:
         z_compensation = 0
         if axis_twist_compensation is not None:
             z_compensation = axis_twist_compensation.get_z_compensation_value(
-                pos
+                pos, self
             )
         # add z compensation to probe position
         epos[2] += z_compensation
@@ -1138,11 +1257,93 @@ class ProbePointsHelper:
                 def capture_timestamp(time: float, point: tuple[float, float]):
                     point_times.append((time, point))
 
-                for point, capture in path[1:]:
-                    toolhead.manual_move(point, scan_speed)
-                    if capture:
-                        toolhead.register_lookahead_callback(
-                            lambda time, p=point: capture_timestamp(time, p)
+                        def capture_timestamp(
+                            time: float, point: tuple[float, float]
+                        ):
+                            point_times.append((time, point))
+
+                        for point, capture in path[1:]:
+                            toolhead.manual_move(point, scan_speed)
+                            if capture:
+                                toolhead.register_lookahead_callback(
+                                    lambda time, p=point: capture_timestamp(
+                                        time, p
+                                    )
+                                )
+
+                        toolhead.wait_moves()
+                        toolhead.dwell(sample_interval)
+                        samples = session.finish(toolhead.get_last_move_time())
+                    except Exception:
+                        session.finish(toolhead.get_last_move_time())
+                        raise
+
+                    # In `point_times` we now have the timestamp of reaching each point in `self.probe_points`,
+                    # and we have all the (time,dist) samples. Both will be monotonically increasing in time,
+                    # so walk through them together and calculate the bed surface z.
+
+                    j = 0
+
+                    # Window catches all samples within a 2mm disc centered on the target point,
+                    # based on the maximum speed during the scan. Moving slower results in a bigger time window
+                    # and thus more samples for that point.
+                    half_window = window / 2.0
+                    for time, point in point_times:
+                        earliest = time - half_window
+                        latest = time + half_window
+                        while j < len(samples) and samples[j].time < earliest:
+                            j += 1
+                        end = j
+                        while end < len(samples) and samples[end].time < latest:
+                            end += 1
+                        if j == end:
+                            raise gcmd.error(
+                                f"Scanning failed. Point at ({point[0]},{point[1]}) had no samples collected for it."
+                            )
+                        relevant = samples[j:end]
+                        invalid = any(abs(p.distance) >= 99.0 for p in relevant)
+                        if invalid:
+                            raise gcmd.error(
+                                f"Scanning failed. Point at ({point[0]},{point[1]}) gathered one or more invalid samples."
+                            )
+                        distance = sum([p.distance for p in relevant]) / (
+                            end - j
+                        )
+                        z = scan_height - distance + self.probe_offsets[2]
+                        if axis_twist_compensation is not None:
+                            z += axis_twist_compensation.get_z_compensation_value(
+                                (point[0], point[1], scan_height), probe
+                            )
+                        self._store_probe_result((point[0], point[1], z))
+
+                    self._check_cancelled(gcmd)
+                    if self.completion is not None:
+                        self._completion_result = (
+                            self.probe_offsets,
+                            [pos[:] for pos in self.results],
+                        )
+                    res = None
+                    if self.finalize_callback is not None:
+                        res = self.finalize_callback(
+                            self.probe_offsets, self.results
+                        )
+                    self._check_cancelled(gcmd)
+                    self.results = []
+                    if isinstance(res, (int, float)):
+                        if res == 0:
+                            done = True
+                        if self.adaptive_horizontal_move_z:
+                            # then res is error
+                            error = math.ceil(res)
+                            scan_height = max(
+                                error + self.probe_offsets[2],
+                                self.min_horizontal_move_z,
+                            )
+                    elif res != "retry":
+                        done = True
+                    if not done and self.alternate_probe_direction:
+                        self._probe_pass_direction_reversed = (
+                            not self._probe_pass_direction_reversed
                         )
 
                 toolhead.wait_moves()

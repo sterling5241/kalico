@@ -294,6 +294,8 @@ class ManualProbeHelper:
         self.report_z_status(next_z_pos != z_pos, z_pos)
 
     def finalize(self, success):
+        if self.finalize_callback is None:
+            return
         self.manual_probe.reset_status()
         self.gcode.register_command("ACCEPT", None)
         self.gcode.register_command("NEXT", None)
@@ -302,7 +304,9 @@ class ManualProbeHelper:
         kin_pos = None
         if success:
             kin_pos = self.get_kinematics_pos()
-        self.finalize_callback(kin_pos)
+        finalize_callback = self.finalize_callback
+        self.finalize_callback = None
+        finalize_callback(kin_pos)
 
 
 def load_config(config):
