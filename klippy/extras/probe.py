@@ -878,6 +878,7 @@ class ProbePointsHelper:
         self.finalize_callback = finalize_callback
         self.probe_points = default_points
         self.name = config.get_name()
+        self.probe_name = config.get("probe_name", "probe")
         self.gcode = self.printer.lookup_object("gcode")
         # Read config settings
         if default_points is None or config.get(option_name, None) is not None:
@@ -1013,7 +1014,9 @@ class ProbePointsHelper:
         self.retry_session.reset_all()
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
-        probe = self.printer.lookup_object("probe", None)
+        probe = self.printer.lookup_object(self.probe_name, None)
+        if probe is None and self.probe_name != "probe":
+            raise gcmd.error("Probe '%s' is not defined" % (self.probe_name,))
         method = gcmd.get("METHOD", "automatic").lower()
 
         self.results = []

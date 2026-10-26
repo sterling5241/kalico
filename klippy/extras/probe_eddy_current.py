@@ -17,6 +17,7 @@ class EddyCalibration:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.probe_name = config.get("probe_name", "probe")
         # Current calibration data
         self.cal_freqs = []
         self.cal_zpos = []
@@ -167,7 +168,7 @@ class EddyCalibration:
         curpos[2] += 5.0
         move(curpos, self.probe_speed)
         # Move sensor over nozzle position
-        pprobe = self.printer.lookup_object("probe")
+        pprobe = self.printer.lookup_object(self.probe_name)
         x_offset, y_offset, z_offset = pprobe.get_offsets()
         curpos[0] -= x_offset
         curpos[1] -= y_offset
@@ -430,7 +431,19 @@ class PrinterEddyProbe:
         self.probe = EddyEndstopWrapper(
             config, self.sensor_helper, self.calibration
         )
-        self.printer.add_object("probe", probe.PrinterProbe(config, self.probe))
+        probe_name = self.calibration.probe_name
+        command_prefix = ""
+        if probe_name != "probe":
+            command_prefix = probe_name.upper() + "_"
+        self.printer.add_object(
+            probe_name,
+            probe.PrinterProbe(
+                config,
+                self.probe,
+                pin_chip_name=probe_name,
+                command_prefix=command_prefix,
+            ),
+        )
 
     def add_client(self, cb):
         self.sensor_helper.add_client(cb)

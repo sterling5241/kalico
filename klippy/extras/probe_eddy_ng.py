@@ -437,6 +437,7 @@ class ProbeEddy:
         self._gcode = self._printer.lookup_object("gcode")
         self._full_name = config.get_name()
         self._name = self._full_name.split()[-1]
+        self._probe_name = config.get("probe_name", "probe")
 
         sensors = {
             "ldc1612": ldc1612_ng.LDC1612_ng,
@@ -518,7 +519,7 @@ class ProbeEddy:
 
         # This class emulates "PrinterProbe". We use some existing helpers to implement
         # functionality like start_session
-        self._printer.add_object("probe", self)
+        self._printer.add_object(self._probe_name, self)
 
         self._bed_mesh_helper = BedMeshScanHelper(self, config)
 
@@ -2375,7 +2376,7 @@ class ProbeEddyEndstopWrapper:
         self._sampler: ProbeEddySampler = None
 
         # Register z_virtual_endstop pin
-        self._printer.lookup_object("pins").register_chip("probe", self)
+        self._printer.lookup_object("pins").register_chip(eddy._probe_name, self)
         # Register event handlers
         self._printer.register_event_handler("klippy:mcu_identify", self._handle_mcu_identify)
         self._printer.register_event_handler("homing:homing_move_begin", self._handle_homing_move_begin)
