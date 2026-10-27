@@ -622,7 +622,7 @@ class BedMeshCalibrate:
 
     def print_generated_points(self, print_func, truncate=False):
         x_offset = y_offset = 0.0
-        probe = self.printer.lookup_object(self.probe_helper.probe_name, None)
+        probe = self.printer.lookup_object("probe", None)
         if probe is not None:
             x_offset, y_offset = probe.get_offsets()[:2]
         print_func(
