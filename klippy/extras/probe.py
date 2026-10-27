@@ -879,6 +879,7 @@ class ProbePointsHelper:
         self.probe_points = default_points
         self.name = config.get_name()
         self.probe_name = config.get("probe_name", "probe")
+        self.scan_probe_name = config.get("scan_probe_name", "probe")
         self.gcode = self.printer.lookup_object("gcode")
         # Read config settings
         if default_points is None or config.get(option_name, None) is not None:
@@ -1017,6 +1018,11 @@ class ProbePointsHelper:
         probe = self.printer.lookup_object(self.probe_name, None)
         if probe is None and self.probe_name != "probe":
             raise gcmd.error("Probe '%s' is not defined" % (self.probe_name,))
+        scan_probe = self.printer.lookup_object(self.scan_probe_name, None)
+        if scan_probe is None and self.scan_probe_name != "probe":
+            raise gcmd.error(
+                "Scan probe '%s' is not defined" % (self.scan_probe_name,)
+            )
         method = gcmd.get("METHOD", "automatic").lower()
 
         self.results = []
@@ -1035,14 +1041,14 @@ class ProbePointsHelper:
         if enforce_lift_speed is not None:
             self.enforce_lift_speed = enforce_lift_speed
 
-        if probe is not None and method == "rapid_scan":
-            mcu_probe = probe.mcu_probe
+        if scan_probe is not None and method == "rapid_scan":
+            mcu_probe = scan_probe.mcu_probe
             can_scan = hasattr(mcu_probe, "begin_collect_distance")
             if can_scan:
-                return self._start_rapid_scan(gcmd, probe)
+                return self._start_rapid_scan(gcmd, scan_probe)
             else:
                 gcmd.respond_info(
-                    f"METHOD=rapid_scan not supported for probe {probe.name}, using automatic"
+                    f"METHOD=rapid_scan not supported for probe {scan_probe.name}, using automatic"
                 )
                 method = "automatic"
 
