@@ -437,6 +437,10 @@ class ProbeEddy:
         self._gcode = self._printer.lookup_object("gcode")
         self._full_name = config.get_name()
         self._name = self._full_name.split()[-1]
+        # named after the config section, as in upstream
+        self.printer = self._printer
+        self.probe_name = self._name
+        self.is_default_probe = config.getboolean("register_as_probe", True)
 
         sensors = {
             "ldc1612": ldc1612_ng.LDC1612_ng,
@@ -518,11 +522,13 @@ class ProbeEddy:
 
         # This class emulates "PrinterProbe". We use some existing helpers to implement
         # functionality like start_session
-        # register with the probe list; the name comes from the config section, as in upstream
-        self.printer = self._printer
-        self.probe_name = self._name
-        self.is_default_probe = config.getboolean("register_as_probe", True)
+        # register with the probe list
         probe.ProbeList.get_list(self._printer).add_probe_object(self, config)
+
+    @property
+    def speed(self):
+        # used by upstream rapid scan as the default PROBE_SPEED
+        return self.params.probe_speed
 
         self._bed_mesh_helper = BedMeshScanHelper(self, config)
 
@@ -2379,7 +2385,10 @@ class ProbeEddyEndstopWrapper:
         self._sampler: ProbeEddySampler = None
 
         # Register z_virtual_endstop pin
-        self._printer.lookup_object("pins").register_chip(eddy._name, self)
+        pins = self._printer.lookup_object("pins")
+        pins.register_chip(eddy._name, self)
+        if eddy.is_default_probe and eddy._name != "probe":
+            pins.register_chip("probe", self)
         # Register event handlers
         self._printer.register_event_handler("klippy:mcu_identify", self._handle_mcu_identify)
         self._printer.register_event_handler("homing:homing_move_begin", self._handle_homing_move_begin)
