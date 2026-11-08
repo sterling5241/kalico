@@ -576,6 +576,7 @@ class ProbeCompensation:
                 "  " + ", ".join("%.6f" % z for z in row)
                 for row in mesh.get_probed_matrix()
             ),
+            True,
         )
         settings = {**mesh.get_mesh_params(), **layout.settings}
         for option in _MOVEMENT_OPTIONS:
@@ -587,17 +588,80 @@ class ProbeCompensation:
                 value = ", ".join(str(v) for v in value)
             configfile.set(self.name, key, value)
 
-    def get_status(self, eventtime):
-        return {
-            "probe": self.probe_name,
-            "reference_probe": self.mesh_reference_name,
-            "calibrating": self._calibration is not None
-            and self._calibration.is_calibrating(),
-            "mesh_matrix": self.mesh.get_mesh_matrix() if self.mesh else [],
-            "mesh_params": dict(self.mesh.get_mesh_params())
-            if self.mesh
-            else {},
-        }
+    def _manual_probe_callback_factory(
+        self, orig_gcmd, probe_points, nozzle_points, interval
+    ):
+        # returns a callback function for the manual probe
+        is_end = self.current_point_index == len(probe_points) - 1
+
+        def callback(kin_pos, new_gcmd):
+            gcmd = orig_gcmd.with_new_context(new_gcmd)
+            if kin_pos is None:
+                # probe was cancelled
+                gcmd.respond_info(
+                    "AXIS_TWIST_COMPENSATION_CALIBRATE: Probe cancelled, "
+                    "calibration aborted"
+                )
+                return
+            z_offset = self.current_measured_z - kin_pos[2]
+            self.results.append(z_offset)
+            if is_end:
+                # end of calibration
+                self._finalize_calibration(gcmd)
+            else:
+                # move to next point
+                self.current_point_index += 1
+                self._calibration(gcmd, probe_points, nozzle_points, interval)
+
+        return callback
+
+    def _finalize_calibration(self, gcmd):
+        # finalize the calibration process
+        # calculate average of results
+        avg = sum(self.results) / len(self.results)
+        # subtract average from each result
+        # so that they are independent of z_offset
+        self.results = [avg - x for x in self.results]
+        # save the config
+        configfile = self.printer.lookup_object("configfile")
+        values_as_str = ", ".join(["{:.6f}".format(x) for x in self.results])
+
+        if self.current_axis == "X":
+            configfile.set(self.configname, "z_compensations", values_as_str)
+            configfile.set(
+                self.configname, "compensation_start_x", self.x_start_point[0]
+            )
+            configfile.set(
+                self.configname, "compensation_end_x", self.x_end_point[0]
+            )
+
+            self.compensation.z_compensations = self.results
+            self.compensation.compensation_start_x = self.x_start_point[0]
+            self.compensation.compensation_end_x = self.x_end_point[0]
+
+        elif self.current_axis == "Y":
+            configfile.set(self.configname, "zy_compensations", values_as_str)
+            configfile.set(
+                self.configname, "compensation_start_y", self.y_start_point[1]
+            )
+            configfile.set(
+                self.configname, "compensation_end_y", self.y_end_point[1]
+            )
+
+            self.compensation.zy_compensations = self.results
+            self.compensation.compensation_start_y = self.y_start_point[1]
+            self.compensation.compensation_end_y = self.y_end_point[1]
+
+        self.gcode.respond_info(
+            "AXIS_TWIST_COMPENSATION state has been saved "
+            "for the current session.  The SAVE_CONFIG command will "
+            "update the printer config file and restart the printer."
+        )
+        # output result
+        gcmd.respond_info(
+            "AXIS_TWIST_COMPENSATION_CALIBRATE: Calibration complete, "
+            "offsets: %s, mean z_offset: %f" % (self.results, avg)
+        )
 
 
 def load_config(config):
