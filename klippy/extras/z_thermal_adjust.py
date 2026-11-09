@@ -9,9 +9,8 @@
 # for thermal expansion of the printer frame.
 from __future__ import annotations
 
-import logging
 import os
-import socket
+import tempfile
 import threading
 import time
 
@@ -362,65 +361,24 @@ class NozzleCalibration:
         probe_result[2] += self.z_lift
         self.toolhead.manual_move(probe_result, speed=self.z_lift_speed)
 
-    def _plot_results(self, slope: float, intercept: float):
-        try:
-            import matplotlib.pyplot as plt
-        except:
-            self.gcmd.respond_info(
-                "matplotlib not installed, cannot plot results!"
-            )
-            return
-
-        # Save into the logs directory, which Moonraker serves
-        start_args = self.printer.get_start_args()
-        log_file = start_args.get("log_file")
-        if not log_file:
-            self.gcmd.respond_info("Logging not enabled, cannot plot results!")
-            return
-
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"nozzle_elongation_{timestamp}.png"
-        fig, ax = plt.subplots()
-        try:
-            z_min = min(self.z_values)
-            z_values = [z_value - z_min for z_value in self.z_values]
-            ax.scatter(self.temperatures, z_values, label="measurements")
-            line_x = np.array([min(self.temperatures), max(self.temperatures)])
-            line_y = slope * line_x + (intercept - z_min)
-            ax.plot(
-                line_x, line_y, color="tab:red", label=f"temp_coeff=-{slope}"
-            )
-            ax.set_title("Nozzle Elongation Coefficient")
-            ax.set_xlabel("Temperature °C")
-            ax.set_ylabel("Nozzle Elongation mm")
-            ax.legend()
-            klippy_logs_dir: str = os.path.dirname(log_file)
-            fig.savefig(os.path.join(klippy_logs_dir, filename), dpi=300)
-            self.gcmd.respond_info(
-                "View the Nozzle elongation results: "
-                f"http://{socket.gethostname()}/server/files/logs/{filename}"
-            )
-        except Exception as ex:
-            logging.error(f"Failed to save plot {filename}")
-            logging.error(ex)
-            self.gcmd.respond_info(f"Failed to save plot {filename}")
-        finally:
-            plt.close(fig)
+    def _save_calibration_data(self):
+        name = "nozzle_elongation_" + time.strftime("%Y%m%d_%H%M%S")
+        output = os.path.join(tempfile.gettempdir(), name + ".csv")
+        with open(output, "w") as csvfile:
+            csvfile.write("temperature,z\n")
+            for temp, z in zip(self.temperatures, self.z_values):
+                csvfile.write("%.1f,%.6f\n" % (temp, z))
+        self.gcmd.respond_info(
+            "Nozzle elongation data written to %s file" % (output,)
+        )
 
     def _calculate_and_report_coeff(self) -> float:
-        # I don't know that there is a lot of value in this:
-        # A picture would be worth 1000 words here
-        # self.gcmd.respond_info(f"Temperatures: {self.temperatures}")
-        # self.gcmd.respond_info(f"Z Values: {self.z_values}")
-
-        # say something a human can understand
         expansion = max(self.z_values) - min(self.z_values)
         temp_range = max(self.temperatures) - min(self.temperatures)
         self.gcmd.respond_info(
-            f"Nozzle expands {expansion}mm over {temp_range}C"
+            f"Nozzle expands {expansion:.4f}mm over {temp_range}C"
         )
 
-        # Linear regression using numpy
         temps = np.array(self.temperatures)
         z_vals = np.array(self.z_values)
         a = np.vstack([temps, np.ones(len(temps))]).T
@@ -428,8 +386,8 @@ class NozzleCalibration:
         slope = round(slope, 8)
         temp_coeff = -1.0 * slope
 
-        self._plot_results(slope, intercept)
         self.gcmd.respond_info(f"Temperature Coefficient: {temp_coeff}")
+        self._save_calibration_data()
         return temp_coeff
 
     def _save_config(self, temp_coeff: float):

@@ -2456,13 +2456,12 @@ is 10.
 - `Z_LIFT_SPEED`: Speed in mm/s of the lift move. The default is 5.
 
 When the calculation completes the command reports the total elongation and
-temperature range measured and the resulting temperature coefficient. It also
-saves a plot of the measurements and fitted line as
-`nozzle_elongation_YYYY-MM-DD_HH-MM-SS.png` in the same directory as the
-Klipper log file, and prints a link to it (the link assumes
-[Moonraker](https://github.com/Arksine/moonraker) serves the `logs` root).
-Plotting requires `matplotlib` and a configured log file; if there is no log
-file the plot is skipped.
+temperature range measured and the resulting temperature coefficient. The
+measured temperature and Z pairs are written to
+`/tmp/nozzle_elongation_YYYYMMDD_HHMMSS.csv`. To graph the measurements and
+the fitted line run `scripts/graph_nozzle_elongation.py` on that file, for
+example `~/klippy-env/bin/python ~/klipper/scripts/graph_nozzle_elongation.py
+-o /tmp/nozzle_elongation.png /tmp/nozzle_elongation_YYYYMMDD_HHMMSS.csv`.
 
 ### ⚠️ [z_calibration]
 
