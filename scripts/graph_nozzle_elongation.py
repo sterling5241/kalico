@@ -4,8 +4,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import optparse
 
-import numpy as np
 import matplotlib
+import numpy as np
 
 
 def parse_log(logname):
